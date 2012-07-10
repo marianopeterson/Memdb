@@ -86,7 +86,8 @@ class QueryEngine:
                 command, args = self.parse(data)
                 engine = getattr(self.storage, command)
                 result = engine(*args)
-                socket.send(result or 'OK')
+                reply = 'OK' if result is None else str(result)
+                socket.send(reply)
             except QueryError as e:
                 msg = "ERROR: {}".format(e.value)
                 log.error(e)
@@ -132,26 +133,36 @@ class StorageEngine:
 
     def __init__(self):
         #pass
-        self.db = {}
+        self.db = {} # key: value
+        self.index = {} # value: [keys]
 
     def set(self, key, value):
-        log.debug("{}={}".format(key, value))
+        if key in self.db and self.index[self.db[key]]:
+            # Remove key from index for this value
+            del self.index[old_value][key]
         self.db[key] = value
+        if value in self.index:
+            self.index[value][key] = True
+        else:
+            self.index[value] = {key: True}
 
     def get(self, key):
-        log.debug("get {}".format(key))
         if key in self.db:
             return self.db[key]
         return 'NULL'
 
     def unset(self, key):
-        log.debug("unset {}".format(key))
         if key in self.db:
+            if self.db[key] in self.index:
+                # Remove key from index for this value
+                del self.index[self.db[key]][key]
             del self.db[key]
 
     def numequalto(self, value):
-        pass
-
+        if value in self.index:
+            # return ", ".join(map(str, self.index[value].keys()))
+            return len(self.index[value])
+        return 0
 
 if __name__ == '__main__':
     server = MemDbServer(HOST, PORT, CONNS)
