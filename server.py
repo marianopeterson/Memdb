@@ -76,7 +76,6 @@ class QueryEngine:
 
     def start(self, socket, address):
         log.debug('connected to: {}:{}'.format(address[0], address[1]))
-        #se = StorageEngine()
         while True:
             data = socket.recv(BUFFER)
             if not data:
@@ -139,7 +138,7 @@ class StorageEngine:
     def set(self, key, value):
         if key in self.db and self.index[self.db[key]]:
             # Remove key from index for this value
-            del self.index[old_value][key]
+            del self.index[self.db[key]][key]
         self.db[key] = value
         if value in self.index:
             self.index[value][key] = True
