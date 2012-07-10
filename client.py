@@ -17,9 +17,10 @@ try:
     server.connect((HOST, PORT))
     while True:
         data = raw_input('')
+        if data.upper() == 'END':
+            raise KeyboardInterrupt()
         server.send(data)
-        data = server.recv(BUFFER)
-        print data
+        print server.recv(BUFFER)
 
 except socket.error, (value, message):
     print "Could not connect to socket: " + message
