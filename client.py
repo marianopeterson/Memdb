@@ -19,7 +19,7 @@ try:
         data = raw_input('')
         server.send(data)
         data = server.recv(BUFFER)
-        print "Received: %s" % (data)
+        print data
 
 except socket.error, (value, message):
     print "Could not connect to socket: " + message

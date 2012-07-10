@@ -75,12 +75,13 @@ class QueryEngine:
                 break
             try:
                 log.debug("Received: {}".format(data))
-                command = self.parse(data)
-                engine = getattr(se, command[0])
-                result = engine(*command[1])
-                socket.send('ack')
+                command, args = self.parse(data)
+                engine = getattr(se, command)
+                result = engine(*args)
+                socket.send(result or 'Acknowledged')
             except InvalidQueryException as e:
                 log.error("Error: ", e)
+                socket.send("Error")
 
         socket.close()
         log.debug('disconnected from {}'.format(address))
@@ -123,12 +124,13 @@ class StorageEngine:
         pass
 
     def set(self, *args):
-        log.debug("setting {}={}".format(args[0], args[1]))
+        log.debug("{}={}".format(args[0], args[1]))
         self.db[args[0]] = args[1]
 
-    def get(self, name):
-        if name in self.db:
-            return self.db[name]
+    def get(self, key):
+        log.debug("get {}".format(key))
+        if key in self.db:
+            return self.db[key]
         return 'NULL'
 
 if __name__ == '__main__':
