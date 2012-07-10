@@ -24,17 +24,20 @@ log = logging.getLogger(__name__)
 
     TODO: explicitly synchronize access to the database, by using threading.Lock.
 '''
-db = []
-server = None
 
 class MemDbServer:
-    """Server: delegate client connections to QueryEngine, in new threads.
+    """ Server: Simply delegates client connections to QueryEngine threads.
+
+                The client-server communication protocol is implemented by QueryEngine.
+                The storage tasks are implemented by StorageEngine.
     """
 
     def __init__(self, host, port, conns):
         self.host = host
         self.port = port
         self.conns = conns
+        self.db = StorageEngine()
+        self.query_engine = QueryEngine(self.db)
 
     def start(self):
         try:
@@ -45,10 +48,11 @@ class MemDbServer:
             while True:
                 log.debug('waiting for connection...')
                 client, address = server.accept()
-                thread.start_new_thread(QueryEngine().start, (client, address))
+                #TODO: limit the number of threads
+                thread.start_new_thread(self.query_engine.start, (client, address))
 
         except KeyboardInterrupt:
-            print "\nShutting down. DB contents are: ", db
+            print "\nShutting down."
 
         except socket.error, (value, message):
             log.error('Could not open socket: {}'.format(message))
@@ -56,18 +60,23 @@ class MemDbServer:
         finally:
             if server:
                 server.close()
-            if client:
-                client.close()
 
 
 class QueryEngine:
+    """ QueryEngine implements the client-server communication protocol.
 
-    def __init__(self):
-        pass
+        Connection handling is implemented by the MemDbServer.
+        Storage is implemented by the StorageEngine.
+    """
+
+    def __init__(self, storage):
+        """ storage: Instance of StorageEngine
+        """
+        self.storage = storage
 
     def start(self, socket, address):
         log.debug('connected to: {}:{}'.format(address[0], address[1]))
-        se = StorageEngine()
+        #se = StorageEngine()
         while True:
             data = socket.recv(BUFFER)
             if not data:
@@ -75,7 +84,7 @@ class QueryEngine:
             try:
                 log.debug("received: {}".format(data))
                 command, args = self.parse(data)
-                engine = getattr(se, command)
+                engine = getattr(self.storage, command)
                 result = engine(*args)
                 socket.send(result or 'OK')
             except QueryError as e:
@@ -87,9 +96,9 @@ class QueryEngine:
         log.debug('disconnected from {}:{}'.format(address[0], address[1]))
 
     def parse(self, query):
-        """Parses query and returns (methodToCall, [args]).
-           MethodToCall: reference to a StorageEngine method,
-           Args:         list of args to pass to the StorageEngine method.
+        """ Parses query and returns (methodToCall, [args]).
+            MethodToCall: reference to a StorageEngine method,
+            Args:         list of args to pass to the StorageEngine method.
         """
         commands = {
             # command   : (methodToCall, argCount)
@@ -122,7 +131,8 @@ class StorageEngine:
     db = {}
 
     def __init__(self):
-        pass
+        #pass
+        self.db = {}
 
     def set(self, key, value):
         log.debug("{}={}".format(key, value))
