@@ -123,9 +123,9 @@ class StorageEngine:
     def __init__(self):
         pass
 
-    def set(self, *args):
-        log.debug("{}={}".format(args[0], args[1]))
-        self.db[args[0]] = args[1]
+    def set(self, key, value):
+        log.debug("{}={}".format(key, value))
+        self.db[key] = value
 
     def get(self, key):
         log.debug("get {}".format(key))
