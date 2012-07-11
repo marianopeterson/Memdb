@@ -90,7 +90,6 @@ class QueryEngine:
                 if not tx:
                     tx = self.storage.get_transaction()
 
-                log.debug("received: {}".format(data))
                 command, args = self.parse(data)
 
                 # TODO: handle transaction commands: begin, commit, rollback
@@ -118,6 +117,7 @@ class QueryEngine:
                 socket.send(msg)
 
             except BaseException as e:
+                raise
                 msg = str(e)
                 log.error(msg)
                 socket.send(msg)
@@ -144,7 +144,8 @@ class QueryEngine:
             'END'       : ('end'        , 0),
             'BEGIN'     : ('begin'      , 0),
             'ROLLBACK'  : ('rollback'   , 0),
-            'COMMIT'    : ('commit'     , 0)
+            'COMMIT'    : ('commit'     , 0),
+            'DUMP'      : ('dump', 0)
         }
 
         words = query.split()
@@ -166,34 +167,32 @@ class QueryError(Exception):
 
 
 class Transaction:
-
-    def __init__(self, id, active_transactions):
+    def __init__(self, id):
         self.id = 0
-        self.active_transactions = []
 
 
 class StorageEngine:
-    db = {}
-    index = {}
-    tx = {}
 
     def __init__(self):
-        self.db = {} # key: value
-        self.index = {} # value: [keys]
-        self.tx = {
-            'next': 0,
-            'last_commit': 0,
-            'active_transactions': []
-        }
+        self.db = {}            # row_key: [tuple, ...]
+        self.index = {}         # data_value: [key, ...]
+        self.tx_next = 0        # next available tx id
+        self.tx_last_commit = 0 # tx id of last commit
+        self.tx_active = {}     # keys are ids of active (uncommitted) transactions
+        self.tx_aborted = {}    # keys are ids of aborted transactions
 
     def get_transaction(self):
         """
-        todo: make this thread-safe, using threading.lock()
+        TODO: remove the race condition below (and make it thread-safe), by using threading.lock()
         """
-        tx_id = self.tx['next']
-        self.tx['next'] += 1
-        self.tx['active_transactions'].append(tx_id)
-        return Transaction(tx_id, self.tx['active_transactions'])
+        tx_id = self.tx_next
+        self.tx_next += 1
+        self.tx_active[tx_id] = True
+        log.debug("BEGIN TRANSACTION {}".format(tx_id))
+        return Transaction(tx_id)
+
+    def dump(self, tx):
+        return self.db
 
     def set(self, tx, key, value):
         # Don't remove keys from the index. Instead, rely on the read
@@ -201,6 +200,7 @@ class StorageEngine:
         # TODO: create a garbage collector to compact the index
 
         # Add tuple to this row
+        log.debug("tx({}): set {}={}".format(tx.id, key, value))
         row_tuple = {'xmin': tx.id, 'xmax': None, 'value': value}
         if key in self.db:
             self.db[key].append(row_tuple)
@@ -216,27 +216,32 @@ class StorageEngine:
     def get(self, tx, key):
         """
         Rules to determine if a tuple is visible:
-        Creation transaction id (xmin) is...
-          - a committed transaction
-          - less than the current transaction's id (tx.id)
-          - not in an active transaction when the current transaction began
 
-        AND, the expiry transaction id (xmax) is...
-          - blank, or refs an aborted transaction
-          - greater than the current transaction id
-          - in an active transaction when the current transaction began
+            The transaction that created the tuple (xmin) is:
+                - not an aborted transacton
+                - less than the current transaction's id (tx.id)
+                - not in an active transaction when the current transaction began
+
+            AND, the tuple's expiration transaction (xmax) is:
+                - blank, or refs an aborted transaction
+                - greater than the current transaction id
+                - in an active transaction when the current transaction began
         """
         if key in self.db:
-            for row in self.db.get(key):
+            for row in reversed(self.db[key]):
                 xmin, xmax = row['xmin'], row['xmax']
-                if (xmin in self.db['tx_log']) and (self.db['tx_log'][xmin] == 'committed') and \
-                        xmin < tx.id and \
-                        xmin not in tx.active_transactions and \
+                log.debug("StorageEngine.get() evaluating tuple: {}".format(row))
+                if ((xmin == tx.id or \
+                        ((xmin not in self.tx_aborted) and \
+                        (xmin <= tx.id) and \
+                        (xmin not in self.tx_active) and \
                         (xmax is None or \
-                            (xmax in self.db['tx_log'] and self.db['tx_log'][xmax] == 'aborted') or \
+                            (xmax in self.tx_aborted) or \
                             xmax > tx.id or \
-                            xmax in tx.active_transactions):
-                    return row['value']
+                            xmax in self.tx_active)))):
+                                log.debug("found visible row: {}".format(row))
+                                return row['value']
+        log.debug("returning NULL")
         return 'NULL'
 
     def unset(self, tx, key):
