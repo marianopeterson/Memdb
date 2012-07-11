@@ -20,7 +20,9 @@ try:
         if data.upper() == 'END':
             raise KeyboardInterrupt()
         server.send(data)
-        print server.recv(BUFFER)
+        response = server.recv(BUFFER)
+        if response != 'OK':
+            print ">> {}".format(response)
 
 except socket.error, (value, message):
     print "Could not connect to socket: " + message
