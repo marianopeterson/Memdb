@@ -18,20 +18,13 @@ BUFFER = 1024
 logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] (%(threadName)-10s) %(message)s')
 log = logging.getLogger(__name__)
 
-"""
-Python synchronizes Dicts and Lists (i.e., they are thread-safe),
-UNLESS __eq__ or __hash__ have been overridden. For the purpose
-of this demo, we'll assume these methods have NOT been overridden.
-
-TODO: explicitly synchronize access to the database, by using threading.Lock.
-"""
 
 class MemDbServer:
     """
     Server: Simply delegates client connections to QueryEngine threads.
 
-    The client-server communication protocol is implemented by QueryEngine.
-    The storage tasks are implemented by StorageEngine.
+    QueryEngine implements the client-server communication protocol.
+    StorageEngine implements manipulation of data in the store.
     """
 
     def __init__(self, host, port, conns):
@@ -68,8 +61,8 @@ class QueryEngine:
     """
     QueryEngine implements the client-server communication protocol.
 
-    Connection handling is implemented by the MemDbServer.
-    Storage is implemented by the StorageEngine.
+    Connection handling is implemented by MemDbServer.
+    Manipulation of data in the store is delegated to StorageEngine.
     """
 
     def __init__(self, storage):
@@ -132,7 +125,8 @@ class QueryEngine:
             'BEGIN'     : ('begin'      , 0),
             'ROLLBACK'  : ('rollback'   , 0),
             'COMMIT'    : ('commit'     , 0),
-            'DUMP'      : ('dump'       , 0)
+            'DUMP'      : ('dump'       , 0),
+            'INDEX'     : ('show_index'      , 0)
         }
 
         words = query.split()
@@ -215,6 +209,9 @@ class StorageEngine:
     def dump(self, tx):
         return self.db
 
+    def show_index(self, tx):
+        return self.index
+
     def set(self, tx, key, value):
         # We don't remove keys from the index. Instead, we rely on the
         # read methods to validate each key referenced by the index.
@@ -294,13 +291,14 @@ class StorageEngine:
                                 if row['value'] is None:
                                     break
                                 return row['value']
-        log.debug("tx({}) found no visible tuples, returning NULL".format(tx.id))
+        log.debug("tx({}): found no visible tuples, returning NULL".format(tx.id))
         return 'NULL'
 
     def numequalto(self, tx, value):
         if tx is None:
             tx = Transaction(self.tx_last_commit)
 
+        log.debug("tx({}): numequalto {}".format(tx.id, value))
         count = 0
         if value in self.index:
             """
@@ -309,9 +307,11 @@ class StorageEngine:
             that do not match the index, in the current transaction context.
             Consequently, we have to validate each row_key that the index maps to.
             """
-            for row_key in self.index:
-                if self.get(tx, row_key) != 'NULL':
+            log.debug("tx({}): index points to {} possible matching rows".format(tx.id, len(self.index[value])))
+            for row_key in self.index[value].iterkeys():
+                if self.get(tx, row_key) == value:
                     count += 1
+        log.debug("tx({}): found {} rows with value {}".format(tx.id, count, value))
         return count
 
 if __name__ == '__main__':
