@@ -87,27 +87,14 @@ class QueryEngine:
                 break
 
             try:
-                if not tx:
-                    tx = self.storage.get_transaction()
-
                 command, args = self.parse(data)
-
-                # TODO: handle transaction commands: begin, commit, rollback
-                if command == 'begin':
-                    log.debug('BEGIN TRANSACTION')
-                    socket.send('[TRANSACTION] OK')
-                    continue
-                elif command == 'rollback':
-                    log.debug('ROLLBACK TRANSACTION')
-                    socket.send('OK')
-                    continue
-                elif command == 'commit':
-                    log.debug('COMMIT TRANSACTION')
-                    socket.send('OK')
-                    continue
-
                 engine = getattr(self.storage, command)
                 result = engine(tx, *args)
+                if isinstance(result, Transaction):
+                    tx = result
+                    result = None
+                    if tx.state == Transaction.COMMITTED or tx.state == Transaction.ABORTED:
+                        tx = None
                 reply = 'OK' if result is None else str(result)
                 socket.send(reply)
 
@@ -145,7 +132,7 @@ class QueryEngine:
             'BEGIN'     : ('begin'      , 0),
             'ROLLBACK'  : ('rollback'   , 0),
             'COMMIT'    : ('commit'     , 0),
-            'DUMP'      : ('dump', 0)
+            'DUMP'      : ('dump'       , 0)
         }
 
         words = query.split()
@@ -167,8 +154,14 @@ class QueryError(Exception):
 
 
 class Transaction:
-    def __init__(self, id):
-        self.id = 0
+    INPROGRESS = 1
+    COMMITTED  = 2
+    ABORTED    = 3
+
+    def __init__(self, id, auto_commit=False, state=INPROGRESS):
+        self.id = id
+        self.auto_commit = auto_commit
+        self.state = state
 
 
 class StorageEngine:
@@ -181,23 +174,54 @@ class StorageEngine:
         self.tx_active = {}     # keys are ids of active (uncommitted) transactions
         self.tx_aborted = {}    # keys are ids of aborted transactions
 
-    def get_transaction(self):
+    def get_transaction(self, auto_commit=False):
         """
         TODO: remove the race condition below (and make it thread-safe), by using threading.lock()
         """
         tx_id = self.tx_next
         self.tx_next += 1
         self.tx_active[tx_id] = True
-        log.debug("BEGIN TRANSACTION {}".format(tx_id))
-        return Transaction(tx_id)
+        tx = Transaction(tx_id, auto_commit=auto_commit)
+        log.debug("tx({}): BEGIN".format(tx.id))
+        return tx
+
+    def commit(self, tx):
+        if tx is None:
+            log.debug("ERROR: no transaction to commit")
+            return "ERROR: No transaction to commit."
+
+        log.debug("tx({}): commit".format(tx.id))
+        if tx.id in self.tx_active:
+            del self.tx_active[tx.id]
+        if tx.id > self.tx_last_commit:
+            self.tx_last_commit = tx.id
+        tx.state = Transaction.COMMITTED
+        return tx
+
+    def rollback(self, tx):
+        if tx is None:
+            log.debug("ERROR: no transaction to rollback.")
+            return "INVALID ROLLBACK"
+
+        self.tx_aborted[tx.id] = True
+        if tx.id in self.tx_active:
+            del self.tx_active[tx.id]
+        tx.state = Transaction.ABORTED
+        return tx
+
+    def begin(self, tx):
+        return self.get_transaction(auto_commit=False)
 
     def dump(self, tx):
         return self.db
 
     def set(self, tx, key, value):
-        # Don't remove keys from the index. Instead, rely on the read
-        # methods to validate each key referenced by the index.
+        # We don't remove keys from the index. Instead, we rely on the
+        # read methods to validate each key referenced by the index.
         # TODO: create a garbage collector to compact the index
+
+        if tx is None:
+            tx = self.get_transaction(auto_commit=True)
 
         # Add tuple to this row
         log.debug("tx({}): set {}={}".format(tx.id, key, value))
@@ -213,6 +237,27 @@ class StorageEngine:
         else:
             self.index[value] = {key: True}
 
+        if tx.auto_commit:
+            self.commit(tx)
+
+    def unset(self, tx, key):
+        if tx is None:
+            tx = self.get_transaction(auto_commit=True)
+
+        if key in self.db:
+            # We don't remove keys from the index. Instead, we rely on the
+            # read methods to validate each key referenced by the index.
+            # TODO: create a garbage collector to compact the index
+
+            # Add a tuple to this row, logging the expiration of the row.
+            # TODO: rather than add another tuple, we should just find the current tuple and expire it.
+            row_tuple = {'xmin': tx.id, 'xmax': tx.id, 'value': None}
+            if key in self.db:
+                self.db[key].append(row_tuple)
+
+        if tx.auto_commit:
+            self.commit(tx)
+
     def get(self, tx, key):
         """
         Rules to determine if a tuple is visible:
@@ -227,10 +272,16 @@ class StorageEngine:
                 - greater than the current transaction id
                 - in an active transaction when the current transaction began
         """
+        if tx is None:
+            tx = Transaction(self.tx_last_commit)
+
+        log.debug("tx({}): get {}".format(tx.id, key))
+
         if key in self.db:
+            log.debug("tx({}): row {} has {} tuples".format(tx.id, key, len(self.db[key])))
             for row in reversed(self.db[key]):
                 xmin, xmax = row['xmin'], row['xmax']
-                log.debug("StorageEngine.get() evaluating tuple: {}".format(row))
+                log.debug("tx({}): evaluating tuple: {})".format(tx.id, row))
                 if ((xmin == tx.id or \
                         ((xmin not in self.tx_aborted) and \
                         (xmin <= tx.id) and \
@@ -239,28 +290,27 @@ class StorageEngine:
                             (xmax in self.tx_aborted) or \
                             xmax > tx.id or \
                             xmax in self.tx_active)))):
-                                log.debug("found visible row: {}".format(row))
+                                log.debug("tx({}): found visible tuple: {})".format(tx.id, row))
+                                if row['value'] is None:
+                                    break
                                 return row['value']
-        log.debug("returning NULL")
+        log.debug("tx({}) found no visible tuples, returning NULL".format(tx.id))
         return 'NULL'
 
-    def unset(self, tx, key):
-        if key in self.db:
-            # Don't remove keys from the index. Instead, rely on the read
-            # methods to validate each key referenced by the index.
-            # TODO: create a garbage collector to compact the index
-
-            # Add a tuple to this row, logging the expiration of the row.
-            # TODO: rather than add another tuple, we should just find the current tuple and expire it.
-            row_tuple = {'xmin': tx.id, 'xmax': tx.id, 'value': value}
-            if key in self.db:
-                self.db[key].append(row_tuple)
-
     def numequalto(self, tx, value):
+        if tx is None:
+            tx = Transaction(self.tx_last_commit)
+
         count = 0
         if value in self.index:
-            for key in self.index:
-                if self.get(tx, key) != 'NULL':
+            """
+            We treat the index like a bloom filter: row_keys that MIGHT have the value,
+            are GUARANTEED to be in the index. However, the index may contain values
+            that do not match the index, in the current transaction context.
+            Consequently, we have to validate each row_key that the index maps to.
+            """
+            for row_key in self.index:
+                if self.get(tx, row_key) != 'NULL':
                     count += 1
         return count
 
