@@ -3,24 +3,32 @@ import socket
 import thread
 
 
-class MemDbServer(object):
+class ConnectionHandler(object):
     """
-    Server: delegates client connections to QueryEngine threads.
+    Connection handler. Delegates each client connection to a socket
+    server thread. The default thread implementation is ThreadLoop,
+    but this can be overridden using ConnectionHandler.set_thread().
     """
 
     def __init__(self, host, port, conns):
         self.host = host
         self.port = port
         self.conns = conns
-        self.db = None
+
+        self.thread = None
+        self.storage = None
         self.protocol = None
+
         self.logger = logging.getLogger(type(self).__name__)
-        
+
+    def set_thread(self, thread):
+        self.thread = thread
+
     def set_protocol(self, protocol):
         self.protocol = protocol
-        
+
     def set_storage(self, storage):
-        self.db = storage
+        self.storage = storage
 
     def start(self):
         try:
@@ -32,7 +40,7 @@ class MemDbServer(object):
                 self.logger.debug('waiting for connection...')
                 client, address = server.accept()
                 #TODO: limit the number of threads
-                thread.start_new_thread(self.protocol.start, (client, address))
+                thread.start_new_thread(self.thread.start, (client, address, self.protocol, self.storage))
 
         except KeyboardInterrupt:
             print "\nShutting down."

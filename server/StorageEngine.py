@@ -2,6 +2,12 @@ import logging
 from Transaction import Transaction
 
 class StorageEngine:
+    """
+    Implements data storage and retrieval using an in-memory data store,
+    and provides ACID transactions.
+
+    TODO: make it thread safe by wrapping data manipulation with thread locks.
+    """
 
     def __init__(self):
         self.db = {}            # row_key: [tuple, ...]

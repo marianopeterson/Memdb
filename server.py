@@ -2,9 +2,10 @@ import argparse
 import logging
 import sys
 
-from server import MemDbServer
+from server import ConnectionHandler
+from server import ThreadLoop
+from server import ProtocolEngine
 from server import StorageEngine
-from server import QueryEngine
 
 def main():
     parser = argparse.ArgumentParser(description='Starts a memory backed key-value database.')
@@ -18,12 +19,10 @@ def main():
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
     
-    storage = StorageEngine()
-    protocol = QueryEngine(storage)
-
-    server = MemDbServer(opts.host, opts.port, opts.conns)
-    server.set_protocol(protocol)
-    server.set_storage(storage)
+    server = ConnectionHandler(opts.host, opts.port, opts.conns)
+    server.set_thread(ThreadLoop())
+    server.set_protocol(ProtocolEngine())
+    server.set_storage(StorageEngine())
     server.start()
 
 if __name__ == '__main__':
